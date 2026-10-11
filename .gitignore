@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Sprites personalizadas (arte de terceiros não deve ir pro repositório público)
+assets/*.png
+assets/*.gif
+!assets/.gitkeep
