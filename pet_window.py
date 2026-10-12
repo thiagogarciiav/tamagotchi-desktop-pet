@@ -222,4 +222,29 @@ class PetWindow(QWidget):
             painter.setFont(font)
             painter.setPen(QColor("#4c1d95"))
             offset = int(3 * math.sin(self._bounce_phase))
-            painter.drawText(int(rect.right() - 30), int(rect.top() - 5 + offset), "Z z z")            
+            painter.drawText(int(rect.right() - 30), int(rect.top() - 5 + offset), "Z z z")
+
+        # ---------------- interação com o mouse ----------------  
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._dag_pos = event.globalPosition().toPoint - self.frameGeometry().topLeft()
+                self._was_dragged = False
+            elif event.Button() == Qt.RightButton:
+                self._show_context_menu(event.globalPosition().toPoint())
+
+        def mouseMoveEvent(self, event):
+            if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+                self._was_dragged = True
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+
+        def mouseReleaseEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                if not self._was_dragged:
+                    self._on_click()
+                self._drag_pos = None
+
+        def _on_click(self):
+            if self.state.asleep:
+                self.state.wake_up()
+                self.state.save()
+            self.update()
