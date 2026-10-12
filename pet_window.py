@@ -1,32 +1,34 @@
 """
 pet_window.py
-
-Janela do pet: sem borda, transparente, sempre no topo, arrastável,
+Janela do bichinho: sem borda, transparente, sempre no topo, arrastável,
 com clique pra acordar/interagir e menu de botão direito com as ações
 (alimentar, brincar, dormir, ver status, sair).
+
+O visual é um fantasminha em pixel art (veja pixel_ghost.py). Cada pixel
+do sprite é desenhado como um quadradinho SCALE x SCALE, sem suavização.
 """
 
-
 import os
-import math
 
-from PySide6.QtCore import Qt, QTimer, QPoint, QRectF
-from PySide6.QtGui import (
-    QPainter, QColor, QPainterPath, QPixmap, QIcon, QFont, QAction,
-    QLinearGradient, QBrush, QPen,
-)
+from PySide6.QtCore import Qt, QTimer, QPoint, QRect
+from PySide6.QtGui import QPainter, QColor, QPixmap, QIcon, QAction
 from PySide6.QtWidgets import QWidget, QMenu, QSystemTrayIcon, QToolTip, QApplication
 
 from pet_state import PetState
+from pixel_ghost import SPRITE_PX, PALETTE, build_sprite, palette_for
 
+# ---------------- tamanhos ----------------
+SCALE = 7                          # cada pixel do sprite vira 7x7 pixels na tela
+SPRITE_SIZE = SPRITE_PX * SCALE    # 112
 WINDOW_SIZE = 140
+SPRITE_X = (WINDOW_SIZE - SPRITE_SIZE) // 2
+SPRITE_Y = WINDOW_SIZE - SPRITE_SIZE - 4   # deixa espaço em cima pro pulinho e pros Z
+
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
-# Nome do arquivo de sprite (opcional) pra cada humor. Se você colocar um
-# PNG com esse nome dentro da pasta "assets", ele passa a ser usado no
-# lugar do fantasminha desenhado por código — é assim que você troca o
-# visual por uma arte real (por exemplo, uma sprite do Gengar que você
-# já tenha os direitos de usar).
+# Sprites opcionais: se existir um PNG com esse nome dentro de "assets",
+# ele é usado no lugar do fantasminha em pixel art (pra você trocar o
+# visual por uma arte sua).
 SPRITE_FILES = {
     "dormindo": "dormindo.png",
     "normal": "normal.png",
@@ -34,6 +36,35 @@ SPRITE_FILES = {
     "triste": "triste.png",
     "faminto": "faminto.png",
 }
+
+# Letra "Z" em pixel art (3x5), usada na animação de sono
+Z_GLYPH = ["XXX", "..X", ".X.", "X..", "XXX"]
+Z_COLOR = "#e9d5ff"
+Z_SHADOW = "#2a1052"
+
+_color_cache = {}
+
+
+def _color(hex_code: str) -> QColor:
+    if hex_code not in _color_cache:
+        _color_cache[hex_code] = QColor(hex_code)
+    return _color_cache[hex_code]
+
+
+def draw_grid(painter, grid, palette, scale, ox, oy):
+    """Desenha uma grade de caracteres como pixel art."""
+    for r, row in enumerate(grid):
+        for c, ch in enumerate(row):
+            if ch == ".":
+                continue
+            painter.fillRect(ox + c * scale, oy + r * scale, scale, scale, _color(palette[ch]))
+
+
+def draw_glyph(painter, glyph, x, y, px, hex_code):
+    for r, row in enumerate(glyph):
+        for c, ch in enumerate(row):
+            if ch == "X":
+                painter.fillRect(x + c * px, y + r * px, px, px, _color(hex_code))
 
 
 class PetWindow(QWidget):
@@ -52,13 +83,18 @@ class PetWindow(QWidget):
 
         self._drag_pos = None
         self._was_dragged = False
-        self._bounce_phase = 0.0
+        self._anim_tick = 0
         self._sprite_cache = {}
 
-        # Loop principal: atualiza estado + redesenha, 1x por segundo
+        # Relógio do estado (fome, energia...): 1x por segundo
         self.tick_timer = QTimer(self)
         self.tick_timer.timeout.connect(self._on_tick)
         self.tick_timer.start(1000)
+
+        # Relógio da animação: 2 quadros por segundo (visual "retrô")
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self._on_anim)
+        self.anim_timer.start(500)
 
         # Autosave, pra não perder progresso se o PC desligar de repente
         self.autosave_timer = QTimer(self)
@@ -78,7 +114,7 @@ class PetWindow(QWidget):
     def _build_tray_icon(self):
         icon = QIcon(self._make_icon_pixmap())
         self.tray = QSystemTrayIcon(icon, self)
-        self.tray.setToolTip("Pet Tamagotchi Virtual")
+        self.tray.setToolTip("Bichinho virtual")
 
         menu = QMenu()
         act_show = QAction("Mostrar/ocultar", self)
@@ -103,39 +139,46 @@ class PetWindow(QWidget):
         pix = QPixmap(32, 32)
         pix.fill(Qt.transparent)
         painter = QPainter(pix)
-        painter.setRenderHint(QPainter.Antialiasing)
-        self._draw_ghost(painter, QRectF(2, 2, 28, 28), mood="normal")
+        draw_grid(painter, build_sprite("normal"), PALETTE, 2, 0, 0)
         painter.end()
         return pix
 
-    # ---------------- loop principal ----------------
+    # ---------------- relógios ----------------
     def _on_tick(self):
         self.state.tick(1.0)
-        self._bounce_phase += 0.3
+
+    def _on_anim(self):
+        self._anim_tick += 1
         self.update()
 
-    # ---------------- desenho do pet ----------------
+    # ---------------- desenho ----------------
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
         mood = self.state.mood()
-        sprite = self._load_sprite(mood)
+        asleep = self.state.asleep
 
-        bounce = 0 if self.state.asleep else int(4 * math.sin(self._bounce_phase))
-        rect = QRectF(10, 10 + bounce, WINDOW_SIZE - 20, WINDOW_SIZE - 20)
+        # Acordado: pulinho de 1 pixel a cada segundo. Dormindo: parado.
+        bob = 0 if asleep else (-SCALE if (self._anim_tick // 2) % 2 else 0)
+        ox, oy = SPRITE_X, SPRITE_Y + bob
 
-        if sprite is not None:
-            painter.drawPixmap(rect.toRect(), sprite)
+        custom = self._load_sprite(mood)
+        if custom is not None:
+            painter.drawPixmap(QRect(ox, oy, SPRITE_SIZE, SPRITE_SIZE), custom)
         else:
-            self._draw_ghost(painter, rect, mood)
+            blink = (not asleep) and (self._anim_tick % 12 == 0)
+            look = (self._anim_tick // 12) % 2
+            grid = build_sprite(mood, blink=blink, look=look)
+            draw_grid(painter, grid, palette_for(mood), SCALE, ox, oy)
 
-        if self.state.asleep:
-            self._draw_zzz(painter, rect)
+        if asleep:
+            self._draw_zzz(painter)
 
     def _load_sprite(self, mood: str):
         """Procura um PNG em assets/ pro humor atual. Retorna None se não
-        existir, e nesse caso o fantasminha é desenhado por código."""
+        existir, e nesse caso o fantasminha em pixel art é usado."""
         if mood in self._sprite_cache:
             return self._sprite_cache[mood]
 
@@ -151,75 +194,20 @@ class PetWindow(QWidget):
         self._sprite_cache[mood] = pixmap
         return pixmap
 
-    def _draw_ghost(self, painter: QPainter, rect: QRectF, mood: str):
-        """Fantasminha original desenhado via código (Dá pra trocar
-        por uma sprite real colocando um PNG em assets/, veja SPRITE_FILES)."""
-        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+    def _draw_zzz(self, painter):
+        """"Z z" em pixel art subindo do canto da cabeça (ciclo de 4 quadros)."""
+        frame = self._anim_tick % 4
+        right = SPRITE_X + SPRITE_SIZE
 
-        body_color = QColor("#8b5cf6") if mood != "triste" else QColor("#6d6d8f")
+        letras = []
+        if frame in (0, 1, 2):
+            letras.append((right - 18, SPRITE_Y + 2, 2))   # Z pequeno
+        if frame in (1, 2, 3):
+            letras.append((right - 10, SPRITE_Y - 16, 3))  # Z médio
 
-        path = QPainterPath()
-        path.moveTo(x, y + h * 0.55)
-        path.cubicTo(x, y - h * 0.1, x + w, y - h * 0.1, x + w, y + h * 0.55)
-        path.lineTo(x + w, y + h)
-        # barriga em ondas (estilo fantasma)
-        wave_count = 4
-        seg = w / wave_count
-        for i in range(wave_count):
-            fx = x + w - seg * i
-            path.quadTo(fx - seg / 2, y + h * 0.85, fx - seg, y + h)
-        path.closeSubpath()
-
-        gradient = QLinearGradient(x, y, x, y + h)
-        gradient.setColorAt(0, body_color.lighter(120))
-        gradient.setColorAt(1, body_color.darker(110))
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(QPen(body_color.darker(150), 2))
-        painter.drawPath(path)
-
-        eye_y = y + h * 0.38
-        eye_dx = w * 0.22
-        eye_w, eye_h = w * 0.16, h * 0.2
-
-        if mood == "dormindo":
-            pen = QPen(QColor("#2e1065"), 3)
-            painter.setPen(pen)
-            painter.drawArc(int(x + w / 2 - eye_dx - eye_w / 2), int(eye_y), int(eye_w), int(eye_h), 0, 180 * 16)
-            painter.drawArc(int(x + w / 2 + eye_dx - eye_w / 2), int(eye_y), int(eye_w), int(eye_h), 0, 180 * 16)
-            return
-
-        painter.setBrush(QColor("white"))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QRectF(x + w / 2 - eye_dx - eye_w / 2, eye_y, eye_w, eye_h))
-        painter.drawEllipse(QRectF(x + w / 2 + eye_dx - eye_w / 2, eye_y, eye_w, eye_h))
-
-        pupil_w = eye_w * 0.45
-        pupil_dy = eye_h * 0.15 if mood != "triste" else eye_h * 0.35
-        painter.setBrush(QColor("#1e1b2e"))
-        painter.drawEllipse(QRectF(x + w / 2 - eye_dx - pupil_w / 2, eye_y + pupil_dy, pupil_w, pupil_w))
-        painter.drawEllipse(QRectF(x + w / 2 + eye_dx - pupil_w / 2, eye_y + pupil_dy, pupil_w, pupil_w))
-
-        mouth_y = y + h * 0.62
-        painter.setPen(QPen(QColor("#2e1065"), 3))
-        painter.setBrush(Qt.NoBrush)
-        mouth_w = w * 0.3
-        if mood == "feliz":
-            painter.drawArc(int(x + w / 2 - mouth_w / 2), int(mouth_y), int(mouth_w), int(h * 0.15), 180 * 16, 180 * 16)
-        elif mood == "faminto":
-            painter.setBrush(QColor("#2e1065"))
-            painter.drawEllipse(QRectF(x + w / 2 - mouth_w * 0.18, mouth_y, mouth_w * 0.36, h * 0.16))
-        elif mood == "triste":
-            painter.drawArc(int(x + w / 2 - mouth_w / 2), int(mouth_y + h * 0.08), int(mouth_w), int(h * 0.15), 0, 180 * 16)
-        else:
-            painter.drawLine(int(x + w / 2 - mouth_w / 2), int(mouth_y + h * 0.05), int(x + w / 2 + mouth_w / 2), int(mouth_y + h * 0.05))
-
-    def _draw_zzz(self, painter: QPainter, rect: QRectF):
-        font = QFont("Arial", 12)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.setPen(QColor("#4c1d95"))
-        offset = int(3 * math.sin(self._bounce_phase))
-        painter.drawText(int(rect.right() - 30), int(rect.top() - 5 + offset), "Z z z")
+        for x, y, px in letras:
+            draw_glyph(painter, Z_GLYPH, x + 1, y + 1, px, Z_SHADOW)  # sombra
+            draw_glyph(painter, Z_GLYPH, x, y, px, Z_COLOR)
 
     # ---------------- interação com o mouse ----------------
     def mousePressEvent(self, event):
@@ -245,7 +233,6 @@ class PetWindow(QWidget):
             self.state.wake_up()
             self.state.save()
         self.update()
-
 
     def _show_context_menu(self, global_pos: QPoint):
         menu = QMenu(self)
