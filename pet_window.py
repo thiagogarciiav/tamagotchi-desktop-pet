@@ -248,3 +248,52 @@ class PetWindow(QWidget):
                 self.state.wake_up()
                 self.state.save()
             self.update()
+
+
+        def _show_context_menu(self, global_pos: QPoint):
+            menu = QMenu(self)
+
+            act_feed = QAction("🍖 Alimentar", self)
+            act_feed.triggered.connect(self._feed)
+            act_play = QAction("🎾 Brincar", self)
+            act_play.triggered.connect(self._play)
+            act_sleep = QAction("💤 Dormir agora", self)
+            act_sleep.triggered.connect(self._sleep_now)
+            act_status = QAction("📊 Ver status", self)
+            act_status.triggered.connect(self._show_status)
+            act_quit = QAction("Sair", self)
+            act_quit.triggered.connect(QApplication.quit)
+
+            menu.addAction(act_feed)
+            menu.addAction(act_play)
+            menu.addAction(act_sleep)
+            menu.addSeparator()
+            menu.addAction(act_status)
+            menu.addSeparator()
+            menu.addAction(act_quit)
+
+            menu.exec(global_pos)
+
+        def _feed(self):
+            if self.state.asleep:
+                self.state.wake_up()
+            self.state.feed()
+            self.update()
+
+        def _play(self):
+            if self.state.asleep:
+                self.state.wake_up()
+            self.state.play()
+            self.update()
+
+        def _sleep_now(self):
+            self.state.put_to_sleep()
+            self.update()
+
+        def _show_status(self):
+            QToolTip.showText(self.mapToGlobal(QPoint(0, 0)), self.state.status_text(), self)
+
+        # ---------------- fechamento ----------------
+        def closeEvent(self, event):
+            self.state.put_to_sleep()  # já chama save()
+            event.accept()
