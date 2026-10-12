@@ -40,7 +40,7 @@ def main():
 
     vbs_content = (
         'Set WshShell = CreateObject("WScript.Shell")\n'
-        f'WshShell.Run """{pythonw}"" ""{main.py}""", 0, False\n'
+        f'WshShell.Run """{pythonw}"" ""{main_py}""", 0, False\n'
     )
 
     os.makedirs(STARTUP_DIR, exist_ok=True)
